@@ -131,6 +131,12 @@ static void Display( void )
    pixelRate = triRate * Size;
    printf("Rate: %d tri in %gs = %g Mtri/s  %g Mpixels/s\n",
       triCount, t1-t0, triRate / 1e6, (double)pixelRate / (1e6));
+   {
+      /* REPORTS=n in the environment ends the run after n rate lines. */
+      static int reports = 0;
+      if (getenv("REPORTS") && ++reports >= atoi(getenv("REPORTS")))
+         exit(0);
+   }
 
    glutSwapBuffers();
 }
@@ -299,6 +305,7 @@ static void Help( const char *program )
 
 int main( int argc, char *argv[] )
 {
+   setvbuf(stdout, NULL, _IONBF, 0);  /* rates show up at once when piped */
    printf("For options:  %s -help\n", argv[0]);
    glutInit( &argc, argv );
    glutInitWindowSize( (int) Width, (int) Height );

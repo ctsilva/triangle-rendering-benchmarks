@@ -168,25 +168,44 @@ if(MACOS)
     # Enable ARC for Objective-C
     target_compile_options(metal_benchmark PRIVATE -fobjc-arc)
     
-    # Custom command to compile Metal shaders
-    add_custom_command(
-        OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/default.metallib
-        COMMAND xcrun -sdk macosx metal -c ${CMAKE_CURRENT_SOURCE_DIR}/Shaders.metal -o ${CMAKE_CURRENT_BINARY_DIR}/Shaders.air
-        COMMAND xcrun -sdk macosx metallib ${CMAKE_CURRENT_BINARY_DIR}/Shaders.air -o ${CMAKE_CURRENT_BINARY_DIR}/default.metallib
-        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/Shaders.metal
-        COMMENT "Compiling Metal shaders"
-        VERBATIM)
-    
-    add_custom_target(metal_shaders 
-        DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/default.metallib)
-    
-    add_dependencies(metal_benchmark metal_shaders)
-    
-    # Copy the metallib to the output directory
-    add_custom_command(TARGET metal_benchmark POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        ${CMAKE_CURRENT_BINARY_DIR}/default.metallib
-        $<TARGET_FILE_DIR:metal_benchmark>/default.metallib)
+    # The Metal shader compiler ships with Xcode's Metal toolchain, not with the Command
+    # Line Tools. Without it, ship the shader source next to the binary instead; the
+    # benchmark compiles it at runtime when no default.metallib is found.
+    execute_process(
+        COMMAND xcrun -sdk macosx --find metal
+        RESULT_VARIABLE METAL_COMPILER_STATUS
+        OUTPUT_QUIET ERROR_QUIET)
+
+    if(METAL_COMPILER_STATUS EQUAL 0)
+        message(STATUS "Metal shader compiler found: precompiling Shaders.metal")
+        # Custom command to compile Metal shaders
+        add_custom_command(
+            OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/default.metallib
+            COMMAND xcrun -sdk macosx metal -c ${CMAKE_CURRENT_SOURCE_DIR}/Shaders.metal -o ${CMAKE_CURRENT_BINARY_DIR}/Shaders.air
+            COMMAND xcrun -sdk macosx metallib ${CMAKE_CURRENT_BINARY_DIR}/Shaders.air -o ${CMAKE_CURRENT_BINARY_DIR}/default.metallib
+            DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/Shaders.metal
+            COMMENT "Compiling Metal shaders"
+            VERBATIM)
+
+        add_custom_target(metal_shaders
+            DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/default.metallib)
+
+        add_dependencies(metal_benchmark metal_shaders)
+
+        # Copy the metallib to the output directory
+        add_custom_command(TARGET metal_benchmark POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${CMAKE_CURRENT_BINARY_DIR}/default.metallib
+            $<TARGET_FILE_DIR:metal_benchmark>/default.metallib)
+    else()
+        message(STATUS "Metal shader compiler not found (install with: xcodebuild "
+                       "-downloadComponent MetalToolchain); Shaders.metal will be compiled "
+                       "at runtime")
+        add_custom_command(TARGET metal_benchmark POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${CMAKE_CURRENT_SOURCE_DIR}/Shaders.metal
+            $<TARGET_FILE_DIR:metal_benchmark>/Shaders.metal)
+    endif()
 endif()
 
 # =============================================================================

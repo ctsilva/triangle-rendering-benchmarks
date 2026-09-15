@@ -220,7 +220,13 @@ static matrix_float4x4 matrix_rotation(float radians, vector_float3 axis) {
         
         // Fall back to compiling Shaders.metal at runtime when no metallib could be built.
         NSLog(@"Falling back to compiling Shaders.metal at runtime...");
+        // SHADER_SOURCE, else Shaders.metal in the working directory, else next to the binary.
         NSString *sourcePath = getenv("SHADER_SOURCE") ? @(getenv("SHADER_SOURCE")) : @"Shaders.metal";
+        if (![[NSFileManager defaultManager] fileExistsAtPath:sourcePath]) {
+            NSString *executablePath = [[[NSProcessInfo processInfo] arguments] objectAtIndex:0];
+            sourcePath = [[executablePath stringByDeletingLastPathComponent]
+                          stringByAppendingPathComponent:@"Shaders.metal"];
+        }
         NSString *source = [NSString stringWithContentsOfFile:sourcePath encoding:NSUTF8StringEncoding error:&error];
         _defaultLibrary = source ? [_device newLibraryWithSource:source options:nil error:&error] : nil;
         if (!_defaultLibrary) {

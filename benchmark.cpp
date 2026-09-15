@@ -1,4 +1,6 @@
 #include <GLFW/glfw3.h>
+#include <cstdlib>
+#include <cstring>
 #include <OpenGL/gl3.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -268,6 +270,17 @@ int main() {
     
     // Make the window's context current
     glfwMakeContextCurrent(window);
+    // Unattended runs take their settings from the environment (see README).
+    if (getenv("TRIANGLES")) {
+        benchConfig.triangleCount = atoi(getenv("TRIANGLES"));
+    }
+    if (getenv("MODE") && strcmp(getenv("MODE"), "triangles") == 0) {
+        benchConfig.useTriangleStrips = false;
+    }
+    if (getenv("NOVSYNC")) {
+        glfwSwapInterval(0);
+    }
+    const double runSeconds = getenv("SECONDS") ? atof(getenv("SECONDS")) : 0.0;
     glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
     glfwSetKeyCallback(window, key_callback);
     
@@ -328,6 +341,12 @@ int main() {
     
     // Start time for FPS calculation
     double lastTime = glfwGetTime();
+    const double startTime = lastTime;
+    double runFrames = 0.0, runWallSeconds = 0.0, runGpuSeconds = 0.0;
+    GLuint gpuTimer = 0;
+    if (runSeconds > 0) {
+        glGenQueries(1, &gpuTimer);
+    }
     int frameCount = 0;
     double trianglesPerSecond = 0.0;
     
@@ -349,20 +368,27 @@ int main() {
         }
         
         // Generate new vertices based on current config
-        std::vector<float> vertices;
+        // Geometry is regenerated and re-uploaded only when the configuration changes.
+        static std::vector<float> vertices;
+        static int cachedCount = -1;
+        static bool cachedStrips = false;
+        const bool regenerate = cachedCount != benchConfig.triangleCount ||
+                                cachedStrips != benchConfig.useTriangleStrips;
+        cachedCount = benchConfig.triangleCount;
+        cachedStrips = benchConfig.useTriangleStrips;
         int actualTriangleCount = 0;
         
         if (benchConfig.useTriangleStrips) {
-            vertices = generateTriangleStripVertices(benchConfig.triangleCount);
+            if (regenerate) vertices = generateTriangleStripVertices(benchConfig.triangleCount);
             actualTriangleCount = vertices.size() / 6 - 2; // For a strip, n vertices produce n-2 triangles
         } else {
-            vertices = generateBenchmarkVertices(benchConfig.triangleCount);
+            if (regenerate) vertices = generateBenchmarkVertices(benchConfig.triangleCount);
             actualTriangleCount = vertices.size() / 18; // Each triangle has 3 vertices with 6 components each
         }
         
         // Update the VBO
         glBindBuffer(GL_ARRAY_BUFFER, VBO);
-        glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(float), vertices.data(), GL_STATIC_DRAW);
+        if (regenerate) glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(float), vertices.data(), GL_STATIC_DRAW);
         
         // Position attribute
         glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)0);
@@ -407,6 +433,7 @@ int main() {
         glUniformMatrix4fv(projectionLoc, 1, GL_FALSE, glm::value_ptr(projection));
         
         // Draw the triangles
+        if (gpuTimer) glBeginQuery(GL_TIME_ELAPSED, gpuTimer);
         glBindVertexArray(VAO);
         if (benchConfig.useTriangleStrips) {
             // Draw as triangle strip
@@ -416,6 +443,38 @@ int main() {
             glDrawArrays(GL_TRIANGLES, 0, vertices.size() / 6);
         }
         
+        if (gpuTimer) {
+            // Unattended mode: wait for the GPU so the wall clock covers the whole frame,
+            // read the draw's GPU time, and stop after the requested seconds.
+            glEndQuery(GL_TIME_ELAPSED);
+            glFinish();
+            GLuint64 gpuNanoseconds = 0;
+            glGetQueryObjectui64v(gpuTimer, GL_QUERY_RESULT, &gpuNanoseconds);
+            const double now = glfwGetTime();
+            if (now - startTime > 1.0) {
+                runFrames += 1;
+                runWallSeconds += now - currentTime;
+                runGpuSeconds += gpuNanoseconds / 1e9;
+            }
+            if (now - startTime >= runSeconds && runFrames > 0) {
+                int fbWidth = 0, fbHeight = 0;
+                glfwGetFramebufferSize(window, &fbWidth, &fbHeight);
+                std::cout << "RESULT mode=" << (benchConfig.useTriangleStrips ? "strips" : "triangles")
+                          << " triangles_per_frame=" << actualTriangleCount
+                          << std::fixed << std::setprecision(1)
+                          << " fps=" << runFrames / runWallSeconds
+                          << " wall_million_tri_per_s=" << std::setprecision(0)
+                          << actualTriangleCount * runFrames / runWallSeconds / 1e6
+                          << " gpu_ms_per_frame=" << std::setprecision(2)
+                          << runGpuSeconds * 1000.0 / runFrames
+                          << " gpu_million_tri_per_s=" << std::setprecision(0)
+                          << (runGpuSeconds > 0 ? actualTriangleCount * runFrames / runGpuSeconds / 1e6 : 0)
+                          << " drawable=" << fbWidth << "x" << fbHeight
+                          << " renderer=" << glGetString(GL_RENDERER) << std::endl;
+                glfwSetWindowShouldClose(window, true);
+            }
+        }
+
         // Calculate FPS and display it in the window title if showing stats
         if (currentTime - lastTime >= 0.5) { // Update every half second
             double fps = frameCount / (currentTime - lastTime);

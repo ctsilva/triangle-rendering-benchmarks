@@ -186,51 +186,73 @@ cmake --build . --target run-metal  # macOS only
 ./trispd -size 200                    # Large triangles
 ```
 
-## Unattended Runs (Metal)
+## Unattended Runs
 
-The Metal benchmark can run without a keyboard by reading its settings from the
-environment. It still opens a window, but it exits by itself and prints one `RESULT`
-line to standard output:
+All three benchmarks can run without a keyboard and exit by themselves.
+
+**Classic (`trispd`)**: `REPORTS=n` ends the run after `n` rate lines; output is unbuffered
+so it can be piped.
 
 ```bash
+REPORTS=3 ./trispd -size 10 | grep Rate:
+```
+
+**Modern OpenGL and Metal** read the same variables and print one `RESULT` line to standard
+output:
+
+```bash
+MODE=strips TRIANGLES=4000000 SECONDS=6 NOVSYNC=1 ./opengl_benchmark | grep RESULT
 MODE=strips TRIANGLES=40000000 SECONDS=6 ./metal_benchmark 2>/dev/null | grep RESULT
 ```
 
 | Variable | Meaning |
 |----------|---------|
-| `TRIANGLES` | Requested triangle count (the grid generator rounds it up, see the printed `triangles_per_frame`) |
+| `TRIANGLES` | Requested triangle count (the grid generators round it up; see the printed `triangles_per_frame`) |
 | `MODE` | `strips` (default) or `triangles` |
 | `SECONDS` | Run length; the first second is warm-up and is not counted |
-| `NOVSYNC` | Ask for 1000 fps and turn off display sync on the layer (MTKView still paces at the display rate in practice) |
-| `SHADER_SOURCE` | Path to `Shaders.metal` when no `default.metallib` is found (default: `Shaders.metal` in the current directory) |
+| `NOVSYNC` | Turn off vertical sync (effective for the OpenGL benchmark; MTKView still paces frames at the display rate) |
+| `SHADER_SOURCE` | Metal only: path to `Shaders.metal` when no `default.metallib` is found (default: the working directory, then next to the binary) |
 
-The `RESULT` line reports two rates. `wall_million_tri_per_s` is triangles per frame
-times frames per second, which is capped by the display refresh whenever the GPU is faster
-than one frame per refresh. `gpu_million_tri_per_s` divides by the GPU time of the command
-buffers themselves, from `GPUStartTime` and `GPUEndTime`, and is the number to compare
-across machines.
+The `RESULT` line reports two rates. `wall_million_tri_per_s` is triangles per frame times
+frames per second, which is capped by the display refresh whenever the GPU is faster than
+one frame per refresh. `gpu_million_tri_per_s` divides by the GPU time of the draw itself,
+from `GL_TIME_ELAPSED` queries in OpenGL and from `GPUStartTime`/`GPUEndTime` on Metal
+command buffers, and is the number to compare across machines. In unattended mode the
+OpenGL benchmark uploads the geometry once instead of every frame, so it measures drawing
+rather than buffer streaming.
 
 If the Metal shader compiler is not available (it ships with Xcode's Metal toolchain, not
-the Command Line Tools), the benchmark compiles `Shaders.metal` at runtime instead of
-loading `default.metallib`, so it can be built with a plain `clang` line:
+the Command Line Tools), CMake copies `Shaders.metal` next to the binary and the benchmark
+compiles it at runtime; the toolchain can be installed with
+`xcodebuild -downloadComponent MetalToolchain`.
 
-```bash
-clang -O2 -fobjc-arc -framework Cocoa -framework Metal -framework MetalKit \
-      -framework QuartzCore benchmark.m -o metal_benchmark
-```
+### Results: Apple M5 (10-core GPU), macOS 26
 
-Measured on an Apple M5 (10-core GPU), 1600x1200 drawable, GPU time:
+GPU time where available. The OpenGL benchmarks run in 800x600 and 800x800 windows and Metal
+in 800x600, all at 2x scale.
 
-| Mode | Triangles per frame | GPU ms per frame | Million triangles/s |
-|------|--------------------:|-----------------:|--------------------:|
-| triangles | 2.0 M | 3.7 | 548 |
-| triangles | 20.0 M | 16.3 | 1,228 |
-| strips | 4.0 M | 2.7 | 1,483 |
-| strips | 40.0 M | 12.1 | 3,309 |
-| strips | 120.0 M | 24.4 | 4,920 |
+| API | Configuration | Triangles per frame | Million triangles/s |
+|-----|---------------|--------------------:|--------------------:|
+| Classic OpenGL, immediate mode | strips, 50 px triangles | 12,800 | 210 |
+| Classic OpenGL, immediate mode | strips, 10 px triangles | 63,000 | 256 |
+| Classic OpenGL, display list | strips, 10 px triangles | 63,000 | 212 |
+| Classic OpenGL, immediate mode | strips, 50 px, textured | 12,800 | 110 |
+| Modern OpenGL 3.3 | triangles | 2.0 M | 334 |
+| Modern OpenGL 3.3 | triangles | 8.0 M | 827 |
+| Modern OpenGL 3.3 | strips | 4.0 M | 988 |
+| Modern OpenGL 3.3 | strips | 16.0 M | 2,971 |
+| Metal | triangles | 2.0 M | 548 |
+| Metal | triangles | 20.0 M | 1,228 |
+| Metal | strips (indexed) | 4.0 M | 1,483 |
+| Metal | strips (indexed) | 40.0 M | 3,309 |
+| Metal | strips (indexed) | 120.0 M | 4,920 |
 
-Both modes are bound by vertex fetch bandwidth at these sizes: 72 bytes per unindexed
-triangle and 28 per indexed strip triangle work out to roughly 90 and 140 GB/s.
+Classic OpenGL is bound by the CPU feeding immediate-mode calls, and a display list does not
+help on Apple's driver. The modern OpenGL and Metal figures are bound by vertex fetch: the
+OpenGL vertex is 24 bytes, the Metal one 32 (two `float3`s padded to 16 bytes each), and
+strips fetch about one vertex per triangle where separate triangles fetch three. With vertex
+buffers above a gigabyte (20 million separate triangles or 40 million strip triangles) the
+OpenGL driver drops to seconds per frame; those sizes are only usable on Metal.
 
 ## Performance Analysis
 
