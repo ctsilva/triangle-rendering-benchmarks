@@ -186,6 +186,52 @@ cmake --build . --target run-metal  # macOS only
 ./trispd -size 200                    # Large triangles
 ```
 
+## Unattended Runs (Metal)
+
+The Metal benchmark can run without a keyboard by reading its settings from the
+environment. It still opens a window, but it exits by itself and prints one `RESULT`
+line to standard output:
+
+```bash
+MODE=strips TRIANGLES=40000000 SECONDS=6 ./metal_benchmark 2>/dev/null | grep RESULT
+```
+
+| Variable | Meaning |
+|----------|---------|
+| `TRIANGLES` | Requested triangle count (the grid generator rounds it up, see the printed `triangles_per_frame`) |
+| `MODE` | `strips` (default) or `triangles` |
+| `SECONDS` | Run length; the first second is warm-up and is not counted |
+| `NOVSYNC` | Ask for 1000 fps and turn off display sync on the layer (MTKView still paces at the display rate in practice) |
+| `SHADER_SOURCE` | Path to `Shaders.metal` when no `default.metallib` is found (default: `Shaders.metal` in the current directory) |
+
+The `RESULT` line reports two rates. `wall_million_tri_per_s` is triangles per frame
+times frames per second, which is capped by the display refresh whenever the GPU is faster
+than one frame per refresh. `gpu_million_tri_per_s` divides by the GPU time of the command
+buffers themselves, from `GPUStartTime` and `GPUEndTime`, and is the number to compare
+across machines.
+
+If the Metal shader compiler is not available (it ships with Xcode's Metal toolchain, not
+the Command Line Tools), the benchmark compiles `Shaders.metal` at runtime instead of
+loading `default.metallib`, so it can be built with a plain `clang` line:
+
+```bash
+clang -O2 -fobjc-arc -framework Cocoa -framework Metal -framework MetalKit \
+      -framework QuartzCore benchmark.m -o metal_benchmark
+```
+
+Measured on an Apple M5 (10-core GPU), 1600x1200 drawable, GPU time:
+
+| Mode | Triangles per frame | GPU ms per frame | Million triangles/s |
+|------|--------------------:|-----------------:|--------------------:|
+| triangles | 2.0 M | 3.7 | 548 |
+| triangles | 20.0 M | 16.3 | 1,228 |
+| strips | 4.0 M | 2.7 | 1,483 |
+| strips | 40.0 M | 12.1 | 3,309 |
+| strips | 120.0 M | 24.4 | 4,920 |
+
+Both modes are bound by vertex fetch bandwidth at these sizes: 72 bytes per unindexed
+triangle and 28 per indexed strip triangle work out to roughly 90 and 140 GB/s.
+
 ## Performance Analysis
 
 ### Understanding the Output

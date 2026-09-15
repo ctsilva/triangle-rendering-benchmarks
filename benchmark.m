@@ -30,6 +30,10 @@ typedef struct {
     double trianglesPerSecond;
 } BenchmarkConfig;
 
+static NSLock *gGpuLock;
+static double gGpuSeconds;
+static unsigned gGpuFrames;
+
 // Forward declarations
 @interface MetalRenderer : NSObject <MTKViewDelegate>
 - (instancetype)initWithMetalView:(MTKView *)mtkView;
@@ -149,6 +153,12 @@ static matrix_float4x4 matrix_rotation(float radians, vector_float3 axis) {
         // Initialize benchmark configuration
         _config.triangleCount = 1000;
         _config.useTriangleStrips = YES;
+        if (getenv("TRIANGLES")) {
+            _config.triangleCount = strtoul(getenv("TRIANGLES"), NULL, 10);
+        }
+        if (getenv("MODE") && strcmp(getenv("MODE"), "triangles") == 0) {
+            _config.useTriangleStrips = NO;
+        }
         _config.wireframeMode = NO;
         _config.showStats = YES;
         _config.frameTimes = [NSMutableArray arrayWithCapacity:60];
@@ -208,9 +218,11 @@ static matrix_float4x4 matrix_rotation(float radians, vector_float3 axis) {
     if (!_defaultLibrary) {
         NSLog(@"Failed to load Metal library from %@: %@", metallibPath, error);
         
-        // Fall back to default library if custom one fails
-        NSLog(@"Falling back to default library...");
-        _defaultLibrary = [_device newDefaultLibrary];
+        // Fall back to compiling Shaders.metal at runtime when no metallib could be built.
+        NSLog(@"Falling back to compiling Shaders.metal at runtime...");
+        NSString *sourcePath = getenv("SHADER_SOURCE") ? @(getenv("SHADER_SOURCE")) : @"Shaders.metal";
+        NSString *source = [NSString stringWithContentsOfFile:sourcePath encoding:NSUTF8StringEncoding error:&error];
+        _defaultLibrary = source ? [_device newLibraryWithSource:source options:nil error:&error] : nil;
         if (!_defaultLibrary) {
             NSLog(@"Failed to create default library: %@", error);
             exit(1);
@@ -456,6 +468,31 @@ static matrix_float4x4 matrix_rotation(float radians, vector_float3 axis) {
         // Calculate triangles per second
         _config.trianglesPerSecond = _actualTriangleCount * fps;
         
+        {
+            static double runFrames = 0, runSeconds = 0, sinceStart = 0;
+            sinceStart = -[_startTime timeIntervalSinceNow];
+            if (sinceStart > 1.0 && lastOutputTime > 0) {
+                runFrames += _config.frameCount;
+                runSeconds += elapsedTime;
+            }
+            double limit = getenv("SECONDS") ? atof(getenv("SECONDS")) : 0;
+            if (limit > 0 && sinceStart >= limit && runSeconds > 0) {
+                double rate = _actualTriangleCount * runFrames / runSeconds;
+                [gGpuLock lock];
+                double gpuSeconds = gGpuSeconds;
+                unsigned gpuFrames = gGpuFrames;
+                [gGpuLock unlock];
+                double gpuRate = gpuSeconds > 0 ? _actualTriangleCount * gpuFrames / gpuSeconds : 0;
+                printf("RESULT mode=%s triangles_per_frame=%lu fps=%.1f wall_million_tri_per_s=%.0f "
+                       "gpu_ms_per_frame=%.2f gpu_million_tri_per_s=%.0f drawable=%.0fx%.0f device=%s\n",
+                       _config.useTriangleStrips ? "strips" : "triangles",
+                       (unsigned long)_actualTriangleCount, runFrames / runSeconds, rate / 1e6,
+                       gpuFrames ? gpuSeconds * 1000.0 / gpuFrames : 0, gpuRate / 1e6,
+                       _drawableWidth, _drawableHeight, [_device.name UTF8String]);
+                fflush(stdout);
+                exit(0);
+            }
+        }
         // Log stats to console
         NSLog(@"Triangle Rate: %.2f million triangles/sec | FPS: %.1f | Triangles per frame: %lu | Mode: %@",
               _config.trianglesPerSecond / 1000000.0,
@@ -578,6 +615,14 @@ static matrix_float4x4 matrix_rotation(float radians, vector_float3 axis) {
     }
     
     // Commit the command buffer
+    if (-[_startTime timeIntervalSinceNow] > 1.0) {
+        [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> finished) {
+            [gGpuLock lock];
+            gGpuSeconds += finished.GPUEndTime - finished.GPUStartTime;
+            gGpuFrames += 1;
+            [gGpuLock unlock];
+        }];
+    }
     [commandBuffer commit];
     
     // Update benchmark stats after command is scheduled
@@ -683,6 +728,10 @@ static matrix_float4x4 matrix_rotation(float radians, vector_float3 axis) {
     self.metalView.enableSetNeedsDisplay = NO;
     self.metalView.paused = NO; // Make sure view is not paused
     self.metalView.framebufferOnly = YES; // Optimize performance
+    if (getenv("NOVSYNC")) {
+        self.metalView.preferredFramesPerSecond = 1000;
+        ((CAMetalLayer *)self.metalView.layer).displaySyncEnabled = NO;
+    }
     
     // Create renderer
     self.metalView.renderer = [[MetalRenderer alloc] initWithMetalView:self.metalView];
@@ -701,6 +750,7 @@ static matrix_float4x4 matrix_rotation(float radians, vector_float3 axis) {
 // MARK: - Main
 
 int main(int argc, const char * argv[]) {
+    gGpuLock = [[NSLock alloc] init];
     @autoreleasepool {
         AppDelegate *appDelegate = [[AppDelegate alloc] init];
         [NSApplication sharedApplication].delegate = appDelegate;
